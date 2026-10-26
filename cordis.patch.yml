@@ -1,0 +1,13 @@
+# dsh-workspace-running-dot bundle patch: one Host row mounted under the
+# package name, resolved from the profile's own node_modules where
+# `dsh plugin --profile <profile> add <path>` installed this package.
+#
+# The Host half is an empty shell — everything this plugin does happens in the
+# browser. The row exists only because the client module system discovers a
+# package's `dsh.client` declaration by scanning the loader's rows: no row, no
+# browser half.
+
+- insert:
+    - id: workspace-running-dot
+      name: dsh-workspace-running-dot
+      config: {}

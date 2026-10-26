@@ -1,0 +1,8 @@
+# 统一用 LF：这是跨平台共享的 JS 包，不应因 Windows 检出而改变换行。
+* text=auto eol=lf
+
+# 图片/二进制不参与换行处理
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

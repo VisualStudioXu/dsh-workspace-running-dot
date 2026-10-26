@@ -1,0 +1,50 @@
+{
+  "name": "dsh-workspace-running-dot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "在左侧栏折叠的工作区分组行上显示一个运行中小圆点（含数量），折叠后也能看出哪个工作区有会话正在跑。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "sidebar",
+    "workspace"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VisualStudioXu/dsh-workspace-running-dot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/VisualStudioXu/dsh-workspace-running-dot/issues"
+  },
+  "homepage": "https://github.com/VisualStudioXu/dsh-workspace-running-dot#readme",
+  "author": "VisualStudioXu",
+  "license": "MIT"
+}
