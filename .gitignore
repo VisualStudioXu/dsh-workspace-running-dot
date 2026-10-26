@@ -2,3 +2,5 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+# 会话记忆记的是本机路径与操作过程，留在本地不进公开仓库
+docs/SESSION-MEMORY.md
