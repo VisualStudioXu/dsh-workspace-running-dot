@@ -2,7 +2,35 @@
 
 > 同一项目共用这一份，**倒序**（最新在上）。每条记录：修改时间 / 修改内容 / 备份位置。
 
-## 2026-10-26 17:20 — 建独立仓库并开源
+## 2026-10-26 17:35 — 本机 profile 的 link 源切到本仓库，旧目录删除
+
+**修改内容**
+
+| 文件 | 改动 |
+| --- | --- |
+| `C:/Users/赵文卓/.dsh/profiles/desktop/package.json` | 改第 28 行 `dsh-workspace-running-dot` 的依赖值：`link:D:/AIDeepseek/src/dsh-workspace-running-dot` → `link:D:/git/dsh-workspace-running-dot` |
+| `C:/Users/赵文卓/.dsh/profiles/desktop/node_modules/dsh-workspace-running-dot` | 删旧 junction，重建为 `[D:\git\dsh-workspace-running-dot]` |
+| `D:/AIDeepseek/scripts/20261025-test-dot.mjs` | 改第 19 行 `PLUGIN` 路径：`join(HERE,'..','src','dsh-workspace-running-dot','client.js')` → `join(HERE,'..','..','git','dsh-workspace-running-dot','client.js')` |
+| `D:/AIDeepseek/src/dsh-workspace-running-dot/` | **删除**（整个目录，6 文件） |
+
+**备份位置**
+
+- profile package.json → `C:/Users/赵文卓/.dsh/profiles/desktop/package.json_backup_20261026-173000`
+- 旧插件目录 → `D:/git/_repo-backups/AIDeepseek-src-dsh-workspace-running-dot-20261026-173500.tar.gz`（14092 B，6 文件）
+- 测试脚本 → `D:/AIDeepseek/scripts/20261025-test-dot.mjs.bak-20261026-173600`
+
+**验证**
+
+- `cmd //c "dir node_modules"` → `<JUNCTION> dsh-workspace-running-dot [D:\git\dsh-workspace-running-dot]`
+- 经 junction 跑 `node node_modules/dsh-workspace-running-dot/scripts/20261025-test-dot.mjs` → ALL PASS
+- `D:/AIDeepseek/scripts/20261025-test-dot.mjs` 指向新路径后 → ALL PASS
+- 删旧目录后 `ls ~/.dsh/profiles/desktop/node_modules/dsh-workspace-running-dot/` 仍能列出文件，链接未断
+
+**为何合并**：此前线上仓库与 profile 里的 live 安装源是两份代码，改插件必须改两处，否则发布的和跑的不一致。切换前三处核心文件（`client.js` / `index.js` / `cordis.patch.yml`）`diff` 完全一致，只 `package.json`（元信息）、`README.md`、`CHANGELOG.md` 有差，属低风险切换。
+
+**遗留**：当前运行的 DSH 实例内存里仍是旧路径加载的插件，需重启才走新路径。因 `client.js` 一字未改，行为不会变化。
+
+## 2026-10-26 17:25 — 建独立仓库并上传 GitHub
 
 **修改内容**
 
@@ -18,7 +46,7 @@
 
 **备份位置**
 
-- 源目录未改动：`D:/AIDeepseek/src/dsh-workspace-running-dot/` 保持原样，本仓库是副本。
+- 源目录当时未改动：`D:/AIDeepseek/src/dsh-workspace-running-dot/` 保持原样，本仓库是副本。（**该目录已于 17:35 删除**，见上一条记录）
 - 本仓库自身即版本库，回溯用 git 历史。
 
 **验证**
@@ -27,7 +55,7 @@
 
 **为何单独建仓**：插件功能已稳定（计数、折叠可见、颜色可配），与 `AIDeepseek` 工作区解耦后，别的机器可以直接 clone 后 link 进 profile，不必复制整个工作区。
 
-**遗留**：远程仓库 `VisualStudioXu/dsh-workspace-running-dot` 发布状态见下方「发布」小节。
+**遗留**：无。（原本遗留的「两份代码」问题已于 17:35 解决：profile 的 link 源已切到本仓库，旧目录删除，现在只有一份。）
 
 **发布**
 
