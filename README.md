@@ -24,6 +24,20 @@
 
 不属于任何工作区的会话单独归到「未分组」那一桶：官方把它们的 key 定成空串（`buildGroup("", …)`），行的 `data-row-key` 就是 `workspace:`。不统计这一桶的话，一个还没落进工作区的新会话跑起来时侧栏毫无动静。
 
+## 「按工作区树」时父行也亮
+
+树模式（`groupBy === 'workspace-tree'`）下官方把子工作区**折叠进父工作区行里**，父行往往只是个目录容器 —— 比如 `D:\AIdeepseek` 本身不生会话，会话都在 `D:\AIdeepseek\project\股票` 里。按「直属会话数」算的话父行永远是 0，最外层工作区于是一直没有圆点。
+
+做法是沿目录前缀建「子工作区 → 父工作区」映射（抄官方 `owningParentFolder`：`child.startsWith(root + '/')` 取最长，大小写敏感），再把每个子工作区的计数累加进它所有的祖先。上面那个例子里，`股票` 有 1 个在跑，`D:\AIdeepseek` 与 `D:\AIdeepseek\project` 都会显示 1。
+
+- 只在树模式下汇总。平铺模式（`workspace`）父子行之间没有视觉从属关系，累加会让父行凭空多出不属于它的数字。
+- 父行的提示语是「N 个会话正在进行（含子工作区）」，跟单工作区的「N 个会话正在进行」区分开，免得按数字去找却找不到那么多会话。
+- 成环防护：累加时用 `seen` 记录走过的节点，万一目录前缀凑出环也不会死循环。
+
+模式从哪读：视图 store 是 `@deepseek-ai/dsh-client-ui-workspace` 的内部实例，`ctx.get('uiWorkspace')` 只交出 actions、没有读口，所以读它落在 `localStorage` 的 `dsh.workspace.view.v5` 键（`defineStore` 的 `persist`，值是 `JSON.stringify(state)`，`groupBy` 在顶层）。读不到时按 DOM 兜底：树模式必然产生 `div[role="group"]` 包住分组行，平铺模式不会。
+
+判断放在**绘制时**而不是重算时：切「按工作区 / 按工作区树」只改视图 store，`sessions` 与 `workspaces` 两个 store 一声不响，订阅不到；但官方重渲染侧栏会动 DOM，`MutationObserver` 必然把插件叫醒。
+
 ## 改圆点颜色
 
 打开「插件 → dsh-workspace-running-dot」，页面里有一块**圆点颜色**：6 个预设色 + 一个自定义取色器 + 「恢复默认」。
@@ -48,6 +62,8 @@
 | --- | --- |
 | 锚点 | `[data-row-key^="workspace:"]`，`row-key` 后半段就是 workspaceId |
 | 插入位置 | `projectText` 之后、`rowActions` 之前 —— `rowActions` 是 `display:none`，只在 hover 时出现，放它后面圆点会随 hover 左右跳 |
+| 树模式汇总 | 按目录前缀建子→父映射，把子工作区计数累加进所有祖先；只在 `workspace-tree` 下生效 |
+| 模式来源 | `localStorage['dsh.workspace.view.v5']` 的 `groupBy`，读不到时按 `div[role="group"]` 是否包着分组行兜底 |
 | 观察 | `MutationObserver` 挂在 `body`（`subtree: true`），折叠/展开/换视图都能触发重扫 |
 | 防自激 | 扫描前 `disconnect`、扫描后重新 `observe`；只有真的改过节点才补排一帧 |
 | 重绘节流 | `requestAnimationFrame`，一帧最多扫一遍 |

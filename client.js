@@ -28,6 +28,16 @@
  * 某工作区在跑几个 = ws.sessionIds 里 `running === true` 的个数，
  * 外加子代理部分（官方 `runningChildCount` 用的是同一份
  * `projectionsBySession[id].values.subagentCatalog`，这里对齐它的语义）。
+ *
+ * ── 按工作区树：父行也要亮 ───────────────────────────────────────
+ * 树模式（`groupBy === 'workspace-tree'`）下官方把子工作区折叠进父行里，
+ * 父工作区常常只是个目录容器、自己没有直属会话，于是按「直属会话数」
+ * 算出来的父行永远是 0 —— 最外层工作区就一直没有圆点。
+ *
+ * 解法是沿目录前缀建立「子工作区 → 父工作区」映射（抄官方的
+ * `owningParentFolder`：`child.startsWith(root + '/')` 取最长），再把每个
+ * 子工作区的计数累加进它所有的祖先。只在树模式下做：平铺模式下父子行
+ * 没有视觉从属关系，累加会让父行凭空多出不属于它的数字。
  */
 
 window.__ModuleLoader__.load({
@@ -307,8 +317,176 @@ window.__ModuleLoader__.load({
       return ids
     }
 
+    /* ---------------------------------------------------------------- */
+    /* 工作区树的父子关系                                                 */
+    /* ---------------------------------------------------------------- */
+
     /**
-     * 算出每个分组行该显示几。
+     * 归一化路径分隔符，只为比较，不改写真实路径。
+     *
+     * 与官方 `owningParentFolder` 内部的 `folderPath()` 同构：Windows 盘符
+     * 或 UNC 路径把 `\` 折成 `/` 并去掉尾部分隔符；POSIX 路径原样保留
+     * （POSIX 下反斜杠是合法的文件名字符，不能当分隔符吃掉）。
+     *
+     * @param path - 工作区目录
+     * @returns 可比较的路径串
+     */
+    function folderPath(path) {
+      const windows = /^[A-Za-z]:[/\\]/.test(path) || path.startsWith('\\\\')
+      return (windows ? path.replaceAll('\\', '/') : path).replace(/\/+$/, '')
+    }
+
+    /**
+     * 找出某个工作区最近的已注册父工作区（不含它自己）。
+     *
+     * 匹配规则抄官方：`child !== root && child.startsWith(root + '/')`，
+     * 在满足条件的里面取最长的那一个；大小写敏感，与 Workspace 身份一致。
+     *
+     * @param path    - 子工作区目录
+     * @param parents - 所有已注册工作区目录
+     * @returns 父目录原样字符串，或 undefined
+     */
+    function owningParentFolder(path, parents) {
+      const child = folderPath(path)
+      let owner
+      let length = -1
+      for (const parent of parents) {
+        const root = folderPath(parent)
+        if (root.length > length && child !== root && child.startsWith(`${root}/`)) {
+          owner = parent
+          length = root.length
+        }
+      }
+      return owner
+    }
+
+    /**
+     * 建立「子工作区 → 父工作区」映射。
+     *
+     * 官方只在「按工作区树」模式下做嵌套，用的是同一套
+     * `owningParentFolder`；「按工作区」模式下 parents 是空 Map，所有行平铺。
+     * 这里把两种模式所需的父子关系都算出来，由调用方按当前模式决定用不用。
+     *
+     * 没有 `path` 的条目（理论上不该出现）直接跳过 —— 宁可退化成平铺，
+     * 也不要因为缺字段把两个不相干的工作区凑成父子。
+     *
+     * @param items - ctx.workspaces.list 快照里的 items
+     * @returns Map<子 workspaceId, 父 workspaceId>
+     */
+    function buildParents(items) {
+      const paths = []
+      const idByPath = new Map()
+      for (const workspace of items) {
+        const path = workspace?.path
+        if (typeof path !== 'string' || path === '') continue
+        paths.push(path)
+        idByPath.set(folderPath(path), workspace.workspaceId)
+      }
+      const parents = new Map()
+      for (const workspace of items) {
+        const path = workspace?.path
+        if (typeof path !== 'string' || path === '') continue
+        const owner = owningParentFolder(path, paths)
+        if (owner === undefined) continue
+        const parentId = idByPath.get(folderPath(owner))
+        if (parentId === undefined || parentId === workspace.workspaceId) continue
+        parents.set(workspace.workspaceId, parentId)
+      }
+      return parents
+    }
+
+    /**
+     * 把每个工作区自己的计数，沿父子链累加进它的所有祖先。
+     *
+     * 这就是「最外层工作区没有圆点」的解法：父工作区往往只是个目录容器，
+     * 自己没有直属会话，但它的子工作区里有会话在跑。树模式下父行既然把
+     * 子工作区折叠在里面，它的圆点就必须反映「折叠在里面的那些」。
+     *
+     * 环保护：用 seen 记录走过的节点，万一父子关系成环也不会死循环。
+     *
+     * @param own     - Map<workspaceId, 自身直属的进行中会话数>
+     * @param parents - Map<子 workspaceId, 父 workspaceId>
+     * @returns 新的 Map，未分组那一桶（空串 key）原样保留
+     */
+    function rollUp(own, parents) {
+      if (parents.size === 0) return own
+      const total = new Map(own)
+      for (const [childId, count] of own) {
+        if (childId === '') continue
+        let current = childId
+        const seen = new Set([current])
+        for (;;) {
+          const parentId = parents.get(current)
+          if (parentId === undefined || seen.has(parentId)) break
+          seen.add(parentId)
+          total.set(parentId, (total.get(parentId) ?? 0) + count)
+          current = parentId
+        }
+      }
+      return total
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* 分组模式：官方视图 store 的持久化键                                */
+    /* ---------------------------------------------------------------- */
+
+    /**
+     * 官方 `createWorkspaceViewStore()` 声明的 `persist`，也就是
+     * `defineStore` 落到 localStorage 时用的键（`persist` 是字符串时
+     * 直接当键名，不再加作用域后缀）。
+     */
+    const VIEW_STORE_KEY = 'dsh.workspace.view.v5'
+
+    /**
+     * 读当前的分组模式：`workspace` / `workspace-tree` / `flat`。
+     *
+     * 为什么不从 ctx 拿：视图 store 是 `@deepseek-ai/dsh-client-ui-workspace`
+     * 内部实例，`ctx.get('uiWorkspace')` 只把 actions 交出去，没有读口。
+     * 而它的状态本来就落在这个 localStorage 键里，读它是稳定契约。
+     *
+     * 任何异常（键不存在、JSON 坏、非浏览器环境）一律退回官方的初始值
+     * `workspace` —— 那时不做祖先汇总，宁可少画一个圆点，也不能在平铺
+     * 模式下把子工作区的计数错误地堆到父行上。
+     *
+     * @returns 分组模式字符串
+     */
+    function readGroupBy() {
+      try {
+        const raw = localStorage.getItem(VIEW_STORE_KEY)
+        if (raw !== null) {
+          const parsed = JSON.parse(raw)
+          const mode = parsed?.groupBy
+          if (typeof mode === 'string') return mode
+        }
+      } catch (_) {
+        /* 落到下面的 DOM 兜底 */
+      }
+      // localStorage 没这个键（用户从没动过视图设置）时不能假定是平铺：
+      // 官方的初始值虽然是 "workspace"，但真正决定「父行里有没有子行」的
+      // 是当前渲染出来的结构。树模式必然产生 div[role="group"] 包住分组行，
+      // 平铺模式不会。以 DOM 为准，比以默认值为准更贴近眼前的事实。
+      return detectTreeByDom() ? 'workspace-tree' : 'workspace'
+    }
+
+    /**
+     * 从 DOM 判断当前是不是嵌套树：只要有一个 `role="group"` 容器里面
+     * 装着分组行，就说明分组被嵌进去了。
+     *
+     * 只认 `workspace:` 前缀的行，会话行的容器不算 —— 平铺模式下会话也
+     * 会被包进 `role="group"`，拿它当证据会误判。
+     *
+     * @returns 是否处于树模式
+     */
+    function detectTreeByDom() {
+      if (typeof document === 'undefined') return false
+      for (const group of document.querySelectorAll('div[role="group"]')) {
+        if (group.querySelector(ROW_SELECTOR) !== null) return true
+      }
+      return false
+    }
+
+    /**
+     * 算出每个分组行「自己」该显示几，并附带父子关系。
      *
      * 除了按工作区归拢，还要照顾「未分组」那一桶：不属于任何工作区的会话，
      * 官方把它们的分组 key 定成空串（`buildGroup("", …)`），行的
@@ -317,10 +495,11 @@ window.__ModuleLoader__.load({
      *
      * @param list   - ctx.sessions.list 快照
      * @param items  - ctx.workspaces.list 快照里的 items
-     * @returns Map<groupId, 正在进行的会话数>，只保留大于 0 的项
+     * @returns {{ own: Map<groupId, number>, parents: Map<string, string> }}
+     *          `own` 只保留大于 0 的项；`parents` 是子→父的工作区映射
      */
     function computeByWorkspace(list, items) {
-      const result = new Map()
+      const own = new Map()
       const grouped = new Set()
       const subagents = collectSubagentIds(list)
 
@@ -332,7 +511,7 @@ window.__ModuleLoader__.load({
           grouped.add(id)
           if (isSessionBusy(list, id)) busy += 1
         }
-        if (busy > 0) result.set(workspace.workspaceId, busy)
+        if (busy > 0) own.set(workspace.workspaceId, busy)
       }
 
       // 未归入任何工作区的会话 → 空 key 那一桶。子代理跳过（见上）。
@@ -341,9 +520,9 @@ window.__ModuleLoader__.load({
         if (grouped.has(id) || subagents.has(id)) continue
         if (isSessionBusy(list, id)) loose += 1
       }
-      if (loose > 0) result.set('', loose)
+      if (loose > 0) own.set('', loose)
 
-      return result
+      return { own, parents: buildParents(items) }
     }
 
     /* ---------------------------------------------------------------- */
@@ -366,9 +545,12 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * @param row        - 分组行（`data-row-key="workspace:…"`）
+     * @param count      - 这一行该显示的数字
+     * @param aggregated - 这个数字里是否含了子工作区的会话
      * @returns 是否真的改动了 DOM（决定要不要再扫一帧）
      */
-    function paintRow(row, count) {
+    function paintRow(row, count, aggregated = false) {
       const existing = row.querySelector(`.${DOT_CLASS}`)
       if (count <= 0) {
         if (existing === null) return false
@@ -377,7 +559,11 @@ window.__ModuleLoader__.load({
       }
       // 一律显示数字：只有 1 个时也写「1」，否则纯圆点看不出到底几个在跑。
       const wanted = String(count)
-      const label = `${count} 个会话正在进行`
+      // 父行的数字是「自己 + 折叠在里面的子工作区」加起来的结果，跟单工作区
+      // 的直属会话数不是一回事，提示语要说清楚，免得用户按数字找不到那么多会话。
+      const label = aggregated
+        ? `${count} 个会话正在进行（含子工作区）`
+        : `${count} 个会话正在进行`
       let dot = existing
       let changed = false
       if (dot === null) {
@@ -392,7 +578,9 @@ window.__ModuleLoader__.load({
         dot.textContent = wanted
         changed = true
       }
-      if (dot.dataset.count !== String(count)) {
+      const stamp = `${count}:${aggregated ? 'all' : 'own'}`
+      if (dot.dataset.stamp !== stamp) {
+        dot.dataset.stamp = stamp
         dot.dataset.count = String(count)
         dot.title = label
         dot.setAttribute('aria-label', label)
@@ -411,8 +599,10 @@ window.__ModuleLoader__.load({
      */
     function apply(ctx) {
       let disposed = false
-      /** 最新一次算出来的 Map<workspaceId, count> */
-      let counts = new Map()
+      /** 每个工作区「自己的」进行中会话数：Map<workspaceId, count> */
+      let ownCounts = new Map()
+      /** 子工作区 → 父工作区：Map<workspaceId, workspaceId> */
+      let parentLinks = new Map()
       let observer = null
       let frame = 0
       /** 观察参数提到外面，disconnect 之后要用同一份重新挂上。 */
@@ -475,9 +665,24 @@ window.__ModuleLoader__.load({
         if (observer !== null) observer.disconnect()
         let changed = false
         try {
+          // 分组模式在这里读，而不是在 recompute 里。
+          // 切换「按工作区 / 按工作区树」只改视图 store，sessions 与
+          // workspaces 两个 store 一声不响，订阅不到；但官方重渲染侧栏
+          // 会动 DOM，MutationObserver 必然把我们叫醒。把模式判断放在
+          // 绘制这一端，顺手就拿到了最新的模式。
+          const nested = readGroupBy() === 'workspace-tree'
+          const base = ownCounts
+          const merged = nested ? rollUp(base, parentLinks) : base
+          // 树模式下，凡是「有子工作区」的父行，它的数字都含了别人的会话。
+          const parentsOnly = new Set(parentLinks.values())
           for (const row of document.querySelectorAll(ROW_SELECTOR)) {
             const key = String(row.dataset.rowKey ?? '').slice(KEY_PREFIX.length)
-            if (paintRow(row, counts.get(key) ?? 0)) changed = true
+            const count = merged.get(key) ?? 0
+            // 只有数字真的比「自己的」大，才说明它掺了子工作区的会话。
+            // 否则一个父工作区哪怕有子工作区、但子工作区全是空闲的，
+            // 也会被标成「含子工作区」，读起来像在撒谎。
+            const aggregated = nested && parentsOnly.has(key) && count > (base.get(key) ?? 0)
+            if (paintRow(row, count, aggregated)) changed = true
           }
         } finally {
           if (!disposed && observer !== null) observer.observe(document.body, OBSERVE_OPTS)
@@ -495,7 +700,17 @@ window.__ModuleLoader__.load({
         const list = ctx.sessions?.list?.getSnapshot?.()
         const snapshot = ctx.workspaces?.list?.getSnapshot?.()
         const items = snapshot?.items
-        counts = list !== undefined && Array.isArray(items) ? computeByWorkspace(list, items) : new Map()
+        if (list === undefined || !Array.isArray(items)) {
+          ownCounts = new Map()
+          parentLinks = new Map()
+          schedulePaint()
+          return
+        }
+        // 只缓存「每个工作区自己的」计数与父子关系，不缓存汇总结果 ——
+        // 汇总依赖当前分组模式，而那东西会在绘制时变（见 paintAll）。
+        const computed = computeByWorkspace(list, items)
+        ownCounts = computed.own
+        parentLinks = computed.parents
         schedulePaint()
       }
 

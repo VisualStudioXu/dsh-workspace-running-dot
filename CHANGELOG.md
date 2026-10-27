@@ -2,6 +2,45 @@
 
 > 同一项目共用这一份，**倒序**（最新在上）。每条记录：修改时间 / 修改内容 / 备份位置。
 
+## 2026-10-27 13:23 — 「按工作区树」模式下最外层工作区没有圆点
+
+**问题**：`groupBy === 'workspace-tree'` 时，最外层工作区行不显示运行圆点。截图里 `D:\AIdeepseek` 这一行空白，而它下面折叠着的 `股票` 有 1 个会话在跑。
+
+**根因**：`computeByWorkspace()` 只统计 `workspace.sessionIds`，也就是该工作区**直属**的会话。树模式下父工作区常常只是个目录容器（`D:\AIdeepseek` 本身不生会话），直属会话数为 0 → 不设 key → `paintRow()` 收到 0 → 不画。选择器与插入位置都没问题，缺的是数据层的祖先汇总。
+
+**修改内容**（只改 `client.js`，550 → 766 行 / 21111 → 31565 B；`index.js` / `cordis.patch.yml` 未动）
+
+| 位置 | 改动 |
+| --- | --- |
+| 文件头注释 | 增补「按工作区树：父行也要亮」一节，记录汇总规则与只在树模式生效的理由 |
+| `folderPath(path)`（新增） | 归一化分隔符：Windows 盘符/UNC 把 `\` 折成 `/` 并去尾部分隔符；POSIX 路径原样保留（POSIX 下反斜杠是合法文件名字符） |
+| `owningParentFolder(path, parents)`（新增） | 抄官方同名函数：`child !== root && child.startsWith(root + '/')`，在满足条件的里面取最长；大小写敏感 |
+| `buildParents(items)`（新增） | 由 `items` 的 `path` 建「子 workspaceId → 父 workspaceId」映射；缺 `path` 的条目跳过 |
+| `rollUp(own, parents)`（新增） | 把每个工作区的计数沿父子链累加进所有祖先；`seen` 防环；未分组空串 key 不参与 |
+| `VIEW_STORE_KEY` / `readGroupBy()`（新增） | 读 `localStorage['dsh.workspace.view.v5']` 的 `groupBy`（官方 `defineStore` 的 `persist`，值为 `JSON.stringify(state)`）；读不到时按 `div[role="group"]` 是否包着 `workspace:` 行兜底判断树模式 |
+| `detectTreeByDom()`（新增） | 只认包着分组行的 `role="group"`；平铺模式下会话也会被包进 `role="group"`，拿它当证据会误判 |
+| `computeByWorkspace()` | 返回值由 `Map` 改为 `{ own, parents }`；`own` 语义不变（只保留 > 0 的项） |
+| `paintRow()` | 新增第三参 `aggregated`；提示语分为「N 个会话正在进行（含子工作区）」/「N 个会话正在进行」，两者共用 `data-stamp` 判重 |
+| `paintAll()` | 绘制时读模式：`nested = readGroupBy() === 'workspace-tree'`，`merged = nested ? rollUp(ownCounts, parentLinks) : ownCounts`；`aggregated` 判定为 `nested && parentsOnly.has(key) && count > own`（只有数字真的超过自身时才标「含子工作区」，避免父工作区自己有会话却没掺入子会话时也误标） |
+| `recompute()` | 改为缓存 `ownCounts` + `parentLinks` 两个原始量，不再缓存汇总结果（汇总依赖绘制时的模式） |
+
+**为何模式判断放在 `paintAll()` 而不是 `recompute()`**：切「按工作区 / 按工作区树」只改视图 store，`sessions` / `workspaces` 两个 store 一声不响，订阅不到；但官方重渲染侧栏会动 DOM，`MutationObserver` 必然把插件叫醒。放在绘制端顺手就拿到最新模式。
+
+**验证**
+
+- `node -e "new Function(src)"` → 语法 OK
+- 抽出 `folderPath` / `owningParentFolder` / `buildParents` / `rollUp` / `computeByWorkspace` 跑真实 Windows 路径（`D:\AIdeepseek` / `...\project` / `...\project\股票` / `...\project\rea` / `...\project\pluginupdata`）：`parents` 得到 4 条正确映射；`own = {股票:1, pluginupdata:1}`；树模式汇总后 `project:2`、`AIdeepseek:2`；两节点成环的用例不死循环且计数正确
+- 用最小 DOM 桩跑 `paintRow`：插入位置在 `rowActions` 之前、重复绘制返回 `false`（不空转）、归零后无残留、无 `rowActions` 时退化为 append
+- 四场景矩阵（父/子各自忙闲 × 树/平铺）：`父忙+子忙 树 → 父 2（含子）、子 1`；`父忙+子忙 平铺 → 父 1、子 1`（不汇总）；`父忙+子闲 树 → 父 1`（不误标「含子」）；`父闲+子忙 树 → 父 1（含子）、子 1`（即用户报告的那个场景）
+- `readGroupBy` 五种输入：无 storage+嵌套 DOM → `workspace-tree`；无 storage+平铺 DOM → `workspace`；storage 声明 tree 但 DOM 平铺 → 以 storage 为准；storage 声明 flat 但 DOM 嵌套 → 以 storage 为准；JSON 损坏 → 退回 DOM 判断
+- asar 内 `createWorkspaceViewStore()` 确认 `persist: "dsh.workspace.view.v5"` 且调用点是 `viewHandle.create()`（无 scope 后缀）
+- `window.__ModuleLoader__.load` 包装层与 factory 均能正常执行，`exports = { name, inject: ['sessions','workspaces'], apply }`
+
+**备份位置**：改前未留 `client.js` 副本（该包已是 npm 安装的实体目录，原始内容可从 `github:VisualStudioXu/dsh-workspace-running-dot` 重新安装取回）。改后快照留了一份：`client.js.after-20261027`（同目录）。
+
+**注意**：本机该包已从 junction 变为 npm 安装的实体目录（`D:\git\dsh-workspace-running-dot` 不存在），本次为就地修改。改后需重启 DSH 或刷新 Web GUI 生效。
+
+
 ## 2026-10-26 17:35 — 本机 profile 的 link 源切到本仓库，旧目录删除
 
 **修改内容**
